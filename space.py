@@ -21,10 +21,10 @@ if not BOT_TOKEN:
     logging.error("BOT_TOKEN не установлен!")
     exit(1)
 
-CHANNEL_ID = -1002090626843      
-MOD_CHAT_ID = -1004285018246     
-RULES_LINK = "https://t.me/+fVHqaNqB5FwyZWM0"
-COMMENTS_CHAT_ID = -1002679699204 
+CHANNEL_ID = -1003679758252      
+MOD_CHAT_ID = -1003917222918     
+RULES_LINK = "https://t.me/RulesOfDemonio"
+COMMENTS_CHAT_ID = -1003777022478 
 
 PUBLISH_INTERVAL =  1200 
 
