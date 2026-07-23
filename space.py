@@ -24,6 +24,7 @@ if not BOT_TOKEN:
 CHANNEL_ID = -1003679758252      
 MOD_CHAT_ID = -1003917222918     
 RULES_LINK = "https://t.me/RulesOfDemonio"
+RANKS_LINK = "https://t.me/spaceranked"
 COMMENTS_CHAT_ID = -1003777022478 
 
 PUBLISH_INTERVAL =  1200 
@@ -328,7 +329,7 @@ async def finalize_preview(message, state):
             f"<b>       * V-E-R-S-U-S *</b>\n\n"
             f"<b>{p2} — «{u2}»</b>\n"
             f"<b>Player 2:</b> {pl2}\n\n"
-            f" <b>「<a href='{RULES_LINK}'>Правила боёв</a>」</b>"
+            f" <b>「<a href='{RULES_LINK}'>Правила боёв</a>」 「<a href='{RANKS_LINK}'>Ранги</a>」</b>"
         )
 
     await state.update_data(final_caption=caption)
