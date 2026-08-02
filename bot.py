@@ -22,11 +22,12 @@ if not BOT_TOKEN:
     exit(1)
 
 CHANNEL_ID = -1002090626843      
-MOD_CHAT_ID = -1004285018246     
+MOD_CHAT_ID = -1002821082503     
+MOD_THREAD_ID = 10171
 RULES_LINK = "https://t.me/+fVHqaNqB5FwyZWM0"
 COMMENTS_CHAT_ID = -1002679699204 
 
-PUBLISH_INTERVAL =  1200 
+PUBLISH_INTERVAL = 300 
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
@@ -35,6 +36,7 @@ dp = Dispatcher()
 pending_posts = {}
 publish_queue = [] 
 last_publish_time = 0 
+recent_channel_posts = {}
 
 moderator_stats = {}
 
@@ -82,11 +84,110 @@ async def is_user_admin(user_id: int) -> bool:
     except Exception:
         return False
 
+@dp.message(F.chat.id == COMMENTS_CHAT_ID, F.is_automatic_forward)
+async def catch_auto_forward(message: types.Message):
+    orig_id = None
+    if message.forward_from_message_id:
+        orig_id = message.forward_from_message_id
+    elif message.forward_origin and hasattr(message.forward_origin, 'message_id'):
+        orig_id = message.forward_origin.message_id
+    
+    if orig_id:
+        recent_channel_posts[orig_id] = message.message_id
+
+async def publish_post_data(data):
+    """Функция непосредственной публикации поста в канал"""
+    sent_msg = None
+    
+    if data['reg_type'] == 'reg_opinion':
+        if data['type1'] == 'photo':
+            sent_msg = await bot.send_photo(CHANNEL_ID, data['photo1'], caption=data['final_caption'], parse_mode="HTML")
+        else:
+            sent_msg = await bot.send_video(CHANNEL_ID, data['photo1'], caption=data['final_caption'], parse_mode="HTML")
+    else:
+        m1 = InputMediaPhoto(media=data['photo1'], caption=data['final_caption'], parse_mode="HTML") if data['type1'] == 'photo' else InputMediaVideo(media=data['photo1'], caption=data['final_caption'], parse_mode="HTML")
+        m2 = InputMediaPhoto(media=data['photo2']) if data['type2'] == 'photo' else InputMediaVideo(media=data['photo2'])
+        
+        media_group = await bot.send_media_group(CHANNEL_ID, media=[m1, m2])
+        sent_msg = media_group[0]
+    
+    logging.info("Пост успешно опубликован.")
+
+    if data['reg_type'] == 'reg_pb' and sent_msg:
+        message_id = sent_msg.message_id
+        
+        players_raw = data.get('players', '').split('\n')
+        names_raw = data.get('name', '').split('\n')
+        conditions = data.get('conditions', 'Нет условий')
+        
+        clean_players = [p.strip() for p in players_raw if p.strip()]
+        clean_names = [n.strip() for n in names_raw if n.strip()]
+        
+        walker_idx = random.randint(0, len(clean_players) - 1) if clean_players else 0
+        walker_user = clean_players[walker_idx] if clean_players else "@unknown"
+        
+        poll_options = []
+        for name in clean_names:
+            if name:
+                poll_options.append(name)
+        
+        if not poll_options:
+            poll_options = ["Player 1", "Player 2"]
+
+        try:
+            await bot.send_poll(
+                chat_id=CHANNEL_ID,
+                question="Кто победит?",
+                options=poll_options,
+                is_anonymous=True,
+                type=PollType.REGULAR,
+                reply_to_message_id=message_id 
+            )
+        except Exception as e:
+            logging.error(f"Ошибка создания опроса: {e}")
+
+        # Ожидаем автоматическую пересылку поста в чат комментариев
+        comment_msg_id = None
+        for _ in range(60): # Увеличено до 30 секунд, чтобы точно дождаться пересылки от Telegram
+            if message_id in recent_channel_posts:
+                comment_msg_id = recent_channel_posts.pop(message_id)
+                break
+            await asyncio.sleep(0.5)
+
+        channel_id_clean = str(CHANNEL_ID)[4:]
+        post_link = f"https://t.me/c/{channel_id_clean}/{message_id}"
+
+        comment_text = (
+            f" <a href='{post_link}'>Пост ПБ</a>\n\n"
+            f"<b>Бот определил, ходит — {walker_user}. Удачи в пруфбаттле! 🔥</b>\n\n"
+            f"<b>Условие пруфбаттла: {conditions}</b>"
+        )
+        
+        kb_comment = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="👉 Перейти к посту", url=post_link, style="primary")
+        ]])
+
+        try:
+            if comment_msg_id:
+                await bot.send_message(
+                    chat_id=COMMENTS_CHAT_ID,
+                    text=comment_text,
+                    parse_mode="HTML",
+                    reply_markup=kb_comment,
+                    reply_to_message_id=comment_msg_id,
+                    disable_web_page_preview=False
+                )
+            else:
+                # Если пост так и не переслался, мы НЕ отправляем это в общий чат.
+                logging.error("Таймаут ожидания: пересылка в комментарии не найдена, сообщение отменено.")
+        except Exception as e:
+            logging.error(f"Ошибка отправки комментария: {e}")
+
 # ---------- ОСНОВНОЕ МЕНЮ ----------
 
 async def show_main_menu(message: types.Message, state: FSMContext):
     await state.clear()
-    is_admin = await is_user_admin(message.from_user.id)
+    is_admin = (message.from_user.id == 5480751648)
     await message.answer(
         "Салам, статюганище! Выбери тип регистрации:",
         reply_markup=get_main_kb(is_admin=is_admin)
@@ -105,92 +206,19 @@ async def publication_worker():
         if publish_queue and (current_time - last_publish_time >= PUBLISH_INTERVAL):
             data = publish_queue.pop(0)
             try:
-                sent_msg = None
-                
-                if data['reg_type'] == 'reg_opinion':
-                    if data['type1'] == 'photo':
-                        sent_msg = await bot.send_photo(CHANNEL_ID, data['photo1'], caption=data['final_caption'], parse_mode="HTML")
-                    else:
-                        sent_msg = await bot.send_video(CHANNEL_ID, data['photo1'], caption=data['final_caption'], parse_mode="HTML")
-                else:
-                    m1 = InputMediaPhoto(media=data['photo1'], caption=data['final_caption'], parse_mode="HTML") if data['type1'] == 'photo' else InputMediaVideo(media=data['photo1'], caption=data['final_caption'], parse_mode="HTML")
-                    m2 = InputMediaPhoto(media=data['photo2']) if data['type2'] == 'photo' else InputMediaVideo(media=data['photo2'])
-                    
-                    media_group = await bot.send_media_group(CHANNEL_ID, media=[m1, m2])
-                    sent_msg = media_group[0]
-                
+                await publish_post_data(data)
                 last_publish_time = time.time()
-                logging.info("Пост успешно опубликован.")
-
-                if data['reg_type'] == 'reg_pb' and sent_msg:
-                    message_id = sent_msg.message_id
-                    
-                    players_raw = data.get('players', '').split('\n')
-                    names_raw = data.get('name', '').split('\n')
-                    conditions = data.get('conditions', 'Нет условий')
-                    
-                    clean_players = [p.strip() for p in players_raw if p.strip()]
-                    clean_names = [n.strip() for n in names_raw if n.strip()]
-                    
-                    walker_idx = random.randint(0, len(clean_players) - 1) if clean_players else 0
-                    walker_user = clean_players[walker_idx] if clean_players else "@unknown"
-                    walker_char = clean_names[walker_idx] if walker_idx < len(clean_names) else "Персонаж"
-                    
-                    poll_options = []
-                    for name in clean_names:
-                        if name:
-                            poll_options.append(name)
-                    
-                    if not poll_options:
-                        poll_options = ["Player 1", "Player 2"]
-
-                    try:
-                        await bot.send_poll(
-                            chat_id=CHANNEL_ID,
-                            question="Кто победит?",
-                            options=poll_options,
-                            is_anonymous=True,
-                            type=PollType.REGULAR,
-                            reply_to_message_id=message_id 
-                        )
-                    except Exception as e:
-                        logging.error(f"Ошибка создания опроса: {e}")
-
-                    channel_id_clean = str(CHANNEL_ID)[4:]
-                    post_link = f"https://t.me/c/{channel_id_clean}/{message_id}"
-
-                    comment_text = (
-                        f" <a href='{post_link}'>Пост ПБ</a>\n\n"
-                        f"<b>Бот определил, ходит — {walker_user}. Удачи в пруфбаттле! 🔥</b>\n\n"
-                        f"<b>Условие пруфбаттла: {conditions}</b>"
-                    )
-                    
-                    kb_comment = InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="👉 Перейти к посту", url=post_link, style="primary")
-                    ]])
-
-                    try:
-                        await bot.send_message(
-                            chat_id=COMMENTS_CHAT_ID,
-                            text=comment_text,
-                            parse_mode="HTML",
-                            reply_markup=kb_comment,
-                            disable_web_page_preview=False
-                        )
-                    except Exception as e:
-                        logging.error(f"Ошибка отправки комментария: {e}")
-
             except Exception as e:
                 logging.error(f"Ошибка публикации: {e}")
         await asyncio.sleep(10)
 
 # ---------- ХЕНДЛЕРЫ КОМАНД ----------
 
-@dp.message(Command("start"))
+@dp.message(Command("start"), F.chat.type == "private")
 async def cmd_start(message: types.Message, state: FSMContext):
     await show_main_menu(message, state)
 
-@dp.message(Command("reyt"))
+@dp.message(Command("reyt"), F.chat.type == "private")
 async def show_rating(message: types.Message):
     if not moderator_stats:
         await message.answer("Пока нет статистики.")
@@ -203,7 +231,7 @@ async def show_rating(message: types.Message):
     
     await message.answer(text, parse_mode="HTML")
 
-@dp.message(F.text == "🤖 Перезапустить")
+@dp.message(F.text == "🤖 Перезапустить", F.chat.type == "private")
 async def restart_handler(message: types.Message, state: FSMContext):
     await show_main_menu(message, state)
 
@@ -217,7 +245,7 @@ async def start_reg(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "admin_send_to_channel")
 async def admin_send_callback(callback: types.CallbackQuery, state: FSMContext):
-    if not await is_user_admin(callback.from_user.id):
+    if callback.from_user.id != 5480751648:
         await callback.answer("У вас нет прав.", show_alert=True)
         return
     await state.set_state(RegForm.waiting_admin_message)
@@ -349,19 +377,24 @@ async def send_to_mod(callback: types.CallbackQuery, state: FSMContext):
     post_id = f"post_{callback.from_user.id}_{int(time.time())}"
     pending_posts[post_id] = data
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="Опубликовать ", callback_data=f"publish_{post_id}", style="success"),
-        InlineKeyboardButton(text="Отменить ", callback_data=f"reject_{post_id}", style="danger")
-    ]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Опубликовать ", callback_data=f"publish_{post_id}", style="success"),
+            InlineKeyboardButton(text="Отменить ", callback_data=f"reject_{post_id}", style="danger")
+        ],
+        [
+            InlineKeyboardButton(text="Опубликовать без очереди", callback_data=f"publish_now_{post_id}", style="primary")
+        ]
+    ])
     
     if data['reg_type'] == 'reg_opinion':
         target = bot.send_photo if data['type1'] == 'photo' else bot.send_video
-        await target(MOD_CHAT_ID, data['photo1'], caption=data['final_caption'], parse_mode="HTML", reply_markup=kb)
+        await target(MOD_CHAT_ID, data['photo1'], caption=data['final_caption'], parse_mode="HTML", reply_markup=kb, message_thread_id=MOD_THREAD_ID)
     else:
         m1 = InputMediaPhoto(media=data['photo1'], caption=data['final_caption'], parse_mode="HTML") if data['type1'] == 'photo' else InputMediaVideo(media=data['photo1'], caption=data['final_caption'], parse_mode="HTML")
         m2 = InputMediaPhoto(media=data['photo2']) if data['type2'] == 'photo' else InputMediaVideo(media=data['photo2'])
-        await bot.send_media_group(MOD_CHAT_ID, media=[m1, m2])
-        await bot.send_message(MOD_CHAT_ID, f" ПБ от {callback.from_user.first_name}", reply_markup=kb)
+        await bot.send_media_group(MOD_CHAT_ID, media=[m1, m2], message_thread_id=MOD_THREAD_ID)
+        await bot.send_message(MOD_CHAT_ID, f" ПБ от {callback.from_user.first_name}", reply_markup=kb, message_thread_id=MOD_THREAD_ID)
         
     await callback.message.answer("✅ Отправлено модераторам!")
     await state.clear()
@@ -372,8 +405,39 @@ async def reject_item(callback: types.CallbackQuery):
     if post_id in pending_posts:
         del pending_posts[post_id]
     await callback.message.delete()
-    await bot.send_message(MOD_CHAT_ID, "⛔ Публикация отменена.")
+    await bot.send_message(MOD_CHAT_ID, "⛔ Публикация отменена.", message_thread_id=MOD_THREAD_ID)
     await callback.answer("Отменено")
+
+# Помещаем publish_now_ перед publish_, чтобы он проверялся первым
+@dp.callback_query(F.data.startswith("publish_now_"))
+async def publish_now_item(callback: types.CallbackQuery):
+    post_id = callback.data.replace("publish_now_", "")
+    data = pending_posts.get(post_id)
+    if not data:
+        await callback.answer("Ошибка: пост уже в очереди или опубликован!", show_alert=True)
+        try: await callback.message.delete()
+        except: pass
+        return
+
+    moderator_stats[callback.from_user.id] = moderator_stats.get(callback.from_user.id, 0) + 1
+    
+    try:
+        await publish_post_data(data)
+        global last_publish_time
+        last_publish_time = time.time()
+        
+        try:
+            await callback.message.delete()
+            text = f"🚀 Пост от {callback.from_user.first_name} опубликован без очереди!"
+            await bot.send_message(MOD_CHAT_ID, text, message_thread_id=MOD_THREAD_ID)
+        except TelegramBadRequest:
+            pass
+
+        del pending_posts[post_id]
+        await callback.answer("⚡ Опубликовано без очереди!")
+    except Exception as e:
+        logging.error(f"Ошибка немедленной публикации: {e}")
+        await callback.answer("❌ Ошибка при публикации!", show_alert=True)
 
 @dp.callback_query(F.data.startswith("publish_"))
 async def publish_item(callback: types.CallbackQuery):
@@ -390,8 +454,8 @@ async def publish_item(callback: types.CallbackQuery):
     
     try:
         await callback.message.delete()
-        text = f"⏳ Пост от {callback.from_user.first_name} в очереди (20 мин)."
-        await bot.send_message(MOD_CHAT_ID, text)
+        text = f"⏳ Пост от {callback.from_user.first_name} в очереди (5 мин)."
+        await bot.send_message(MOD_CHAT_ID, text, message_thread_id=MOD_THREAD_ID)
     except TelegramBadRequest:
         pass
 
