@@ -223,7 +223,7 @@ async def publication_worker():
 async def cmd_start(message: types.Message, state: FSMContext):
     await show_main_menu(message, state)
 
-@dp.message(Command("reyt"))
+@dp.message(Command("reyt"), F.chat.type == "private")
 async def show_rating(message: types.Message):
     if not moderator_stats:
         await message.answer("Пока нет статистики.")
