@@ -148,7 +148,7 @@ async def publish_post_data(data):
 
         # Ожидаем автоматическую пересылку поста в чат комментариев
         comment_msg_id = None
-        for _ in range(6):
+        for _ in range(60): # Увеличено до 30 секунд, чтобы точно дождаться пересылки от Telegram
             if message_id in recent_channel_posts:
                 comment_msg_id = recent_channel_posts.pop(message_id)
                 break
@@ -178,13 +178,8 @@ async def publish_post_data(data):
                     disable_web_page_preview=False
                 )
             else:
-                await bot.send_message(
-                    chat_id=COMMENTS_CHAT_ID,
-                    text=comment_text,
-                    parse_mode="HTML",
-                    reply_markup=kb_comment,
-                    disable_web_page_preview=False
-                )
+                # Если пост так и не переслался, мы НЕ отправляем это в общий чат.
+                logging.error("Таймаут ожидания: пересылка в комментарии не найдена, сообщение отменено.")
         except Exception as e:
             logging.error(f"Ошибка отправки комментария: {e}")
 
